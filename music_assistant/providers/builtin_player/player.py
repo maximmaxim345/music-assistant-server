@@ -14,6 +14,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -251,16 +252,8 @@ class BuiltinPlayer(Player):
             # on iOS devices with Home Assistant OS installations.
 
         media = player.current_media
-        if queue is None or media is None:
-            raise web.HTTPNotFound(reason="No active queue or media found!")
-
-        if media.queue_id is None:
-            raise web.HTTPError  # TODO: better error
-
-        queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-
-        if queue_item is None:
-            raise web.HTTPError  # TODO: better error
+        if media is None:
+            raise web.HTTPNotFound(reason="No active media found!")
 
         # TODO: set encoding quality using a bitrate parameter,
         # maybe even dynamic with auto/semiauto switching with bad network?
@@ -276,12 +269,46 @@ class BuiltinPlayer(Player):
             channels=DEFAULT_PCM_FORMAT.channels,
         )
 
-        async for chunk in get_ffmpeg_stream(
-            audio_input=self.mass.streams.get_queue_flow_stream(
+        # select audio source based on media type (similar to universal group player)
+        if media.media_type == MediaType.ANNOUNCEMENT and media.custom_data:
+            # special case: stream announcement
+            audio_source = self.mass.streams.get_announcement_stream(
+                media.custom_data["url"],
+                output_format=pcm_format,
+                use_pre_announce=media.custom_data["use_pre_announce"],
+            )
+        elif media.media_type == MediaType.PLUGIN_SOURCE and media.custom_data:
+            # special case: plugin source stream
+            audio_source = self.mass.streams.get_plugin_source_stream(
+                plugin_source_id=media.custom_data["source_id"],
+                output_format=pcm_format,
+                player_id=media.custom_data["player_id"],
+            )
+        elif media.queue_id and media.queue_item_id:
+            # regular queue stream request
+            if queue is None:
+                raise web.HTTPNotFound(reason="No active queue found!")
+
+            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            if queue_item is None:
+                raise web.HTTPError  # TODO: better error
+
+            audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=queue_item,
                 pcm_format=pcm_format,
-            ),
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
+                output_format=pcm_format,
+            )
+
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_source,
             input_format=pcm_format,
             output_format=stream_format,
             # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
