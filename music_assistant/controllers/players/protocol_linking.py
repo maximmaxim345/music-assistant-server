@@ -176,6 +176,7 @@ class ProtocolLinkingMixin:
                     for conn_type, value in protocol_player.device_info.identifiers.items():
                         parent_player.device_info.add_identifier(conn_type, value)
                     self._update_universal_device_info(parent_player, protocol_player)
+                    self._save_universal_player_data(parent_player)
                     # Check if this universal player should now be merged with another
                     # (e.g., DLNA brought a MAC via ARP that matches an AirPlay universal)
                     self._check_merge_universal_players(parent_player)
